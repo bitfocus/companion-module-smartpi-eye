@@ -8,7 +8,7 @@ import { GetConfigFields, type ModuleConfig, type ModuleSecrets } from './config
 import { UpdateVariableDefinitions, type VariablesSchema } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions, type ActionsSchema } from './actions.js'
-import { UpdateFeedbacks, type FeedbacksSchema } from './feedbacks.js'
+import { UpdateFeedbacks, type FeedbacksSchema, FeedbackIDs } from './feedbacks.js'
 import { UpdatePresets } from './presets.js'
 import PQueue from 'p-queue'
 import { Agent, request } from 'undici'
@@ -19,6 +19,7 @@ import {
 	GetGroupsResponse,
 	GetMessagesResponse,
 	GetModesResponse,
+	GetStatusResponse,
 	type EndpointName,
 } from './schemas/index.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -62,6 +63,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	#mode: GetModesResponse | undefined
 	#groups: GetGroupsResponse | undefined
 	#messages: GetMessagesResponse | undefined
+	#status: GetStatusResponse | undefined
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -92,6 +94,9 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		this.#controller.abort('Config Updated')
 
 		this.#controller = new AbortController()
+
+		process.env.NODE_TLS_REJECT_UNAUTHORIZED = config.allowInsecure ? '0' : '1'
+
 		this.#updateDispatcher()
 		this.#updateCompanionBits()
 		this.#startPolling()
@@ -153,10 +158,11 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		const signal = this.#controller.signal
 
 		try {
-			const [modes, groups, messages] = await Promise.all([
+			const [modes, groups, messages, status] = await Promise.all([
 				this.#fetch({ endpoint: 'getModes' }, GetModesResponse),
 				this.#fetch({ endpoint: 'getGroups' }, GetGroupsResponse),
 				this.#fetch({ endpoint: 'getMessages' }, GetMessagesResponse),
+				this.#fetch({ endpoint: 'getStatus' }, GetStatusResponse),
 			])
 
 			// A cached list is `undefined` until the first successful poll, so it never deep-equals
@@ -178,7 +184,13 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 			// Once per poll, however many of the lists moved
 			if (changed) this.#updateCompanionBits()
 
-			const malformed = modes === undefined || groups === undefined || messages === undefined
+			// Status feeds variables rather than definitions, so it is published on its own
+			if (status !== undefined && !isDeepStrictEqual(this.#status, status)) {
+				this.#status = status
+				this.setVariableValues({ id: status.id, status: status.status })
+			}
+
+			const malformed = modes === undefined || groups === undefined || messages === undefined || status === undefined
 			if (malformed) {
 				this.updateStatus(InstanceStatus.UnknownWarning, 'Unexpected response, see log')
 			} else {
@@ -200,6 +212,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		this.#updateFeedbacks()
 		this.#updatePresets()
 		this.#updateVariableDefinitions()
+		this.checkFeedbacks(FeedbackIDs.GetName) // force a refresh of the value feedback
 	}
 
 	/**

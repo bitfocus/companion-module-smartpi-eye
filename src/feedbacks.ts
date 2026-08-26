@@ -3,8 +3,12 @@ import type ModuleInstance from './main.js'
 import type { NameProperty } from './main.js'
 import { describeIdChoices } from './options.js'
 
+export enum FeedbackIDs {
+	GetName = 'get_name',
+}
+
 export type FeedbacksSchema = {
-	get_name: {
+	[FeedbackIDs.GetName]: {
 		type: 'value'
 		options: {
 			property: NameProperty
@@ -27,7 +31,7 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 	const messageChoices = self.getMessageChoices()
 
 	self.setFeedbackDefinitions({
-		get_name: {
+		[FeedbackIDs.GetName]: {
 			type: 'value',
 			name: 'Get Name',
 			description: 'The name of the selected mode, group or message',

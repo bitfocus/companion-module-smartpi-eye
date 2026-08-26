@@ -2,13 +2,18 @@ import type { DropdownChoice } from '@companion-module/base'
 import type ModuleInstance from './main.js'
 import { describeIdChoices } from './options.js'
 
+export enum ActionIDs {
+	SetMode = 'set_mode',
+	Message = 'message',
+}
+
 export type ActionsSchema = {
-	set_mode: {
+	[ActionIDs.SetMode]: {
 		options: {
 			mode: number
 		}
 	}
-	message: {
+	[ActionIDs.Message]: {
 		options: {
 			method: 'show' | 'hide'
 			group: number
@@ -28,7 +33,7 @@ export function UpdateActions(self: ModuleInstance): void {
 	const messageChoices = self.getMessageChoices()
 
 	self.setActionDefinitions({
-		set_mode: {
+		[ActionIDs.SetMode]: {
 			name: 'Set Mode',
 			options: [
 				{
@@ -44,7 +49,7 @@ export function UpdateActions(self: ModuleInstance): void {
 				await self.sendMsg({ endpoint: 'setMode', params: { id: event.options.mode } }, context.signal)
 			},
 		},
-		message: {
+		[ActionIDs.Message]: {
 			name: 'Show/Hide Message',
 			options: [
 				{
