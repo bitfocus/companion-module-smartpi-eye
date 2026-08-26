@@ -17,6 +17,7 @@ import {
 	buildPath,
 	endpoints,
 	GetGroupsResponse,
+	GetIngesterJobsResponse,
 	GetMessagesResponse,
 	GetModesResponse,
 	GetStatusResponse,
@@ -64,6 +65,8 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	#groups: GetGroupsResponse | undefined
 	#messages: GetMessagesResponse | undefined
 	#status: GetStatusResponse | undefined
+	#jobs: GetIngesterJobsResponse | undefined
+	#jobsSummary: Record<string, number> | undefined
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -158,11 +161,12 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		const signal = this.#controller.signal
 
 		try {
-			const [modes, groups, messages, status] = await Promise.all([
+			const [modes, groups, messages, status, jobs] = await Promise.all([
 				this.#fetch({ endpoint: 'getModes' }, GetModesResponse),
 				this.#fetch({ endpoint: 'getGroups' }, GetGroupsResponse),
 				this.#fetch({ endpoint: 'getMessages' }, GetMessagesResponse),
 				this.#fetch({ endpoint: 'getStatus' }, GetStatusResponse),
+				this.#fetch({ endpoint: 'getIngesterJobs' }, GetIngesterJobsResponse),
 			])
 
 			// A cached list is `undefined` until the first successful poll, so it never deep-equals
@@ -184,13 +188,36 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 			// Once per poll, however many of the lists moved
 			if (changed) this.#updateCompanionBits()
 
-			// Status feeds variables rather than definitions, so it is published on its own
+			// These feed variables rather than definitions, so they are published separately —
+			// batched into one write, in the same spirit as the single rebuild above
+			const values: Partial<VariablesSchema> = {}
 			if (status !== undefined && !isDeepStrictEqual(this.#status, status)) {
 				this.#status = status
-				this.setVariableValues({ id: status.id, status: status.status })
+				values.id = status.id
+				values.status = status.status
 			}
+			if (jobs !== undefined) {
+				if (!isDeepStrictEqual(this.#jobs, jobs)) {
+					this.#jobs = jobs
+					values.ingester_jobs = jobs
+				}
 
-			const malformed = modes === undefined || groups === undefined || messages === undefined || status === undefined
+				// Compared separately: `lastRunTime` moves on almost every poll, so the raw list
+				// churns while the per-status counts usually do not
+				const summary = summariseJobs(jobs)
+				if (!isDeepStrictEqual(this.#jobsSummary, summary)) {
+					this.#jobsSummary = summary
+					values.ingester_jobs_summary = summary
+				}
+			}
+			if (Object.keys(values).length > 0) this.setVariableValues(values)
+
+			const malformed =
+				modes === undefined ||
+				groups === undefined ||
+				messages === undefined ||
+				status === undefined ||
+				jobs === undefined
 			if (malformed) {
 				this.updateStatus(InstanceStatus.UnknownWarning, 'Unexpected response, see log')
 			} else {
@@ -358,6 +385,17 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	#updateVariableDefinitions(): void {
 		UpdateVariableDefinitions(this)
 	}
+}
+
+/** Counts ingester jobs by their scheduler state, e.g. `{ Started: 20, Stopped: 2 }`. */
+function summariseJobs(jobs: GetIngesterJobsResponse): Record<string, number> {
+	const summary: Record<string, number> = {}
+
+	for (const job of jobs) {
+		summary[job.jobStatus] = (summary[job.jobStatus] ?? 0) + 1
+	}
+
+	return summary
 }
 
 /**

@@ -42,8 +42,6 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 					label: 'Property',
 					choices: [...propertyChoices],
 					default: propertyChoices[0].id,
-					// The fields below key their visibility off this one, which is only allowed
-					// for options that cannot themselves be expressions
 					disableAutoExpression: true,
 				},
 				{
