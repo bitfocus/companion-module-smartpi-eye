@@ -43,6 +43,9 @@ type MessageFor<K extends EndpointName> = { endpoint: K } & (EndpointMap[K]['par
 	: { params?: never }) &
 	(EndpointMap[K]['body'] extends z.ZodType ? { body: z.input<EndpointMap[K]['body']> } : { body?: never })
 
+/** The polled lists that can be looked up by id. */
+export type NameProperty = 'mode' | 'group' | 'message'
+
 /** A request against any one of the endpoints in the registry. */
 export type Message = { [K in EndpointName]: MessageFor<K> }[EndpointName]
 
@@ -282,7 +285,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	 * The modes from the most recent successful poll, as dropdown choices.
 	 * Empty until the first poll lands.
 	 */
-	getModeChoices(): DropdownChoice<number>[] {
+	public getModeChoices(): DropdownChoice<number>[] {
 		return (this.#mode ?? []).map((mode) => ({
 			id: mode.id,
 			label: mode.name || `Mode ${mode.id}`,
@@ -293,7 +296,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	 * The groups from the most recent successful poll, as dropdown choices.
 	 * Empty until the first poll lands.
 	 */
-	getGroupChoices(): DropdownChoice<number>[] {
+	public getGroupChoices(): DropdownChoice<number>[] {
 		return (this.#groups ?? []).map((group) => ({
 			id: group.id,
 			label: group.name || `Group ${group.id}`,
@@ -304,15 +307,26 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	 * The messages from the most recent successful poll, as dropdown choices.
 	 * Empty until the first poll lands.
 	 */
-	getMessageChoices(): DropdownChoice<number>[] {
+	public getMessageChoices(): DropdownChoice<number>[] {
 		return (this.#messages ?? []).map((message) => ({
 			id: message.id,
 			label: message.name || `Message ${message.id}`,
 		}))
 	}
 
+	/**
+	 * The name of one entry in a polled list, or `undefined` if that id is not in the list
+	 * we last saw — which also covers the window before the first poll lands.
+	 */
+	public getName(property: NameProperty, id: number): string | undefined {
+		const entries: { id: number; name: string }[] | undefined =
+			property === 'mode' ? this.#mode : property === 'group' ? this.#groups : this.#messages
+
+		return entries?.find((entry) => entry.id === id)?.name
+	}
+
 	// Return config fields for web config
-	getConfigFields(): SomeCompanionConfigField[] {
+	public getConfigFields(): SomeCompanionConfigField[] {
 		return GetConfigFields()
 	}
 

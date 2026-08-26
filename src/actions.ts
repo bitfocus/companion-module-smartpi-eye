@@ -1,5 +1,6 @@
 import type { DropdownChoice } from '@companion-module/base'
 import type ModuleInstance from './main.js'
+import { describeIdChoices } from './options.js'
 
 export type ActionsSchema = {
 	set_mode: {
@@ -19,7 +20,7 @@ export type ActionsSchema = {
 const methodChoices = [
 	{ id: 'show', label: 'Show' },
 	{ id: 'hide', label: 'Hide' },
-] as const satisfies DropdownChoice<'show' | 'hide'>[]
+] as const satisfies readonly DropdownChoice<'show' | 'hide'>[]
 
 export function UpdateActions(self: ModuleInstance): void {
 	const modeChoices = self.getModeChoices()
@@ -50,7 +51,7 @@ export function UpdateActions(self: ModuleInstance): void {
 					id: 'method',
 					type: 'dropdown',
 					label: 'Method',
-					choices: methodChoices,
+					choices: [...methodChoices],
 					default: 'show',
 					expressionDescription: `Accepted values: ${methodChoices.map((choice) => `'${choice.id}'`).join(', ')}`,
 					disableAutoExpression: true,
@@ -87,38 +88,4 @@ export function UpdateActions(self: ModuleInstance): void {
 			},
 		},
 	})
-}
-
-/** The values an id dropdown will accept once it is in expression mode. */
-function describeIdChoices(choices: DropdownChoice<number>[], noun: string): string {
-	if (choices.length === 0) return `No ${noun} have been read from the device yet`
-
-	return `Accepted values: ${formatIdRanges(choices.map((choice) => choice.id))}`
-}
-
-/**
- * Collapses a set of ids into the shortest readable form: runs of consecutive ids become
- * `min-max`, isolated ids are listed on their own — `1-5, 7, 11-14`.
- */
-function formatIdRanges(ids: number[]): string {
-	const sorted = [...new Set(ids)].sort((a, b) => a - b)
-	if (sorted.length === 0) return ''
-
-	const parts: string[] = []
-	let start = sorted[0]
-	let end = start
-
-	for (const id of sorted.slice(1)) {
-		if (id === end + 1) {
-			end = id
-			continue
-		}
-
-		parts.push(start === end ? `${start}` : `${start}-${end}`)
-		start = id
-		end = id
-	}
-	parts.push(start === end ? `${start}` : `${start}-${end}`)
-
-	return parts.join(', ')
 }
