@@ -13,7 +13,14 @@ import { UpdatePresets } from './presets.js'
 import PQueue from 'p-queue'
 import { Agent, request } from 'undici'
 import type { z } from 'zod'
-import { buildPath, endpoints, GetModesResponse, type EndpointName } from './schemas/index.js'
+import {
+	buildPath,
+	endpoints,
+	GetGroupsResponse,
+	GetMessagesResponse,
+	GetModesResponse,
+	type EndpointName,
+} from './schemas/index.js'
 import { isDeepStrictEqual } from 'node:util'
 
 export type ModuleSchema = {
@@ -50,6 +57,8 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	#pollTimer: NodeJS.Timeout | undefined
 	#polling = false
 	#mode: GetModesResponse | undefined
+	#groups: GetGroupsResponse | undefined
+	#messages: GetMessagesResponse | undefined
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -118,8 +127,20 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	}
 
 	/**
-	 * One poll cycle: fetch the mode list and, if it differs from what we last saw, cache it
-	 * and rebuild the action/feedback/preset/variable definitions that are derived from it.
+	 * Fetches one endpoint and validates it. Returns `undefined` if the body did not match the
+	 * schema, so a single malformed list does not discard the rest of the poll.
+	 */
+	async #fetch<T>(message: Message, schema: z.ZodType<T>): Promise<T | undefined> {
+		const result = schema.safeParse(await this.sendMsg(message))
+		if (result.success) return result.data
+
+		this.log('error', `Unexpected response from ${endpoints[message.endpoint].path}: ${result.error.message}`)
+		return undefined
+	}
+
+	/**
+	 * One poll cycle: refresh the lists the Companion definitions are built from, and rebuild
+	 * those definitions once if any of them changed.
 	 */
 	async #poll(): Promise<void> {
 		// A slow response must not let cycles stack up behind each other
@@ -129,21 +150,37 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		const signal = this.#controller.signal
 
 		try {
-			const modes = GetModesResponse.safeParse(await this.sendMsg({ endpoint: 'getModes' }))
+			const [modes, groups, messages] = await Promise.all([
+				this.#fetch({ endpoint: 'getModes' }, GetModesResponse),
+				this.#fetch({ endpoint: 'getGroups' }, GetGroupsResponse),
+				this.#fetch({ endpoint: 'getMessages' }, GetMessagesResponse),
+			])
 
-			if (!modes.success) {
-				this.log('error', `Unexpected response from ${endpoints.getModes.path}: ${modes.error.message}`)
-				this.updateStatus(InstanceStatus.UnknownWarning, 'Unexpected mode list')
-				return
+			// A cached list is `undefined` until the first successful poll, so it never deep-equals
+			// a fetched one — the first poll always counts as a change.
+			let changed = false
+			if (modes !== undefined && !isDeepStrictEqual(this.#mode, modes)) {
+				this.#mode = modes
+				changed = true
+			}
+			if (groups !== undefined && !isDeepStrictEqual(this.#groups, groups)) {
+				this.#groups = groups
+				changed = true
+			}
+			if (messages !== undefined && !isDeepStrictEqual(this.#messages, messages)) {
+				this.#messages = messages
+				changed = true
 			}
 
-			// First poll always counts as a change, since there is nothing to compare against
-			if (this.#mode === undefined || !isDeepStrictEqual(this.#mode, modes.data)) {
-				this.#mode = modes.data
-				this.#updateCompanionBits()
-			}
+			// Once per poll, however many of the lists moved
+			if (changed) this.#updateCompanionBits()
 
-			this.updateStatus(InstanceStatus.Ok)
+			const malformed = modes === undefined || groups === undefined || messages === undefined
+			if (malformed) {
+				this.updateStatus(InstanceStatus.UnknownWarning, 'Unexpected response, see log')
+			} else {
+				this.updateStatus(InstanceStatus.Ok)
+			}
 		} catch (err) {
 			// An abort means the config changed or the module went away, not a failure
 			if (signal.aborted) return
@@ -249,6 +286,28 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		return (this.#mode ?? []).map((mode) => ({
 			id: mode.id,
 			label: mode.name || `Mode ${mode.id}`,
+		}))
+	}
+
+	/**
+	 * The groups from the most recent successful poll, as dropdown choices.
+	 * Empty until the first poll lands.
+	 */
+	getGroupChoices(): DropdownChoice<number>[] {
+		return (this.#groups ?? []).map((group) => ({
+			id: group.id,
+			label: group.name || `Group ${group.id}`,
+		}))
+	}
+
+	/**
+	 * The messages from the most recent successful poll, as dropdown choices.
+	 * Empty until the first poll lands.
+	 */
+	getMessageChoices(): DropdownChoice<number>[] {
+		return (this.#messages ?? []).map((message) => ({
+			id: message.id,
+			label: message.name || `Message ${message.id}`,
 		}))
 	}
 
