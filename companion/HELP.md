@@ -1,3 +1,3 @@
-## Your module
+## SmartPI EYE
 
-Write some help for your users here!
+Set the SmartPI mode
