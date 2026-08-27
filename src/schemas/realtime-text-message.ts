@@ -4,6 +4,16 @@ import { DotNetDateTime, UnknownResponse } from './common.js'
 /** Tag: `ApiRealtimeTextMessage` */
 
 /**
+ * Declared `int64` upstream, so a value can exceed `Number.MAX_SAFE_INTEGER`.
+ *
+ * `JSON.parse` has already rounded such a value by the time this runs and the exact digits
+ * are not recoverable here, but a sequence number is only compared and displayed — losing
+ * the last few digits beats dropping the whole message, which `z.int()` would do. Still
+ * rejects non-integers and non-numbers.
+ */
+const SeqNumber = z.number().refine(Number.isInteger, { error: 'Expected an integer' })
+
+/**
  * A realtime text message, as returned by the `GET` endpoints.
  *
  * This is the one shape the OpenAPI document actually defines (`components.schemas.TextMessage`);
@@ -11,12 +21,7 @@ import { DotNetDateTime, UnknownResponse } from './common.js'
  */
 export const TextMessage = z.object({
 	id: z.int(),
-	/**
-	 * Declared `int64` upstream. Values seen so far are small, but a genuine 64-bit value
-	 * would exceed `Number.MAX_SAFE_INTEGER` — `z.int()` rejects those rather than
-	 * silently accepting a rounded number.
-	 */
-	seqNumber: z.int(),
+	seqNumber: SeqNumber,
 	groupName: z.string().nullable(),
 	message: z.string().nullable(),
 	priority: z.int(),
@@ -33,7 +38,7 @@ export type TextMessage = z.infer<typeof TextMessage>
  */
 export const TextMessageInput = z.strictObject({
 	id: z.int().optional(),
-	seqNumber: z.int().optional(),
+	seqNumber: SeqNumber.optional(),
 	groupName: z.string().nullable().optional(),
 	message: z.string().nullable().optional(),
 	priority: z.int().optional(),
