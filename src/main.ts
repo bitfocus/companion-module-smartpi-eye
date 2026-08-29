@@ -24,6 +24,7 @@ import {
 	type EndpointName,
 } from './schemas/index.js'
 import { isDeepStrictEqual } from 'node:util'
+import { StatusManager } from './status.js'
 
 export type ModuleSchema = {
 	config: ModuleConfig
@@ -51,6 +52,24 @@ export type NameProperty = 'mode' | 'group' | 'message'
 /** A request against any one of the endpoints in the registry. */
 export type Message = { [K in EndpointName]: MessageFor<K> }[EndpointName]
 
+/** Maps an HTTP response status to an instance status, for sendMsg to report via #statusManager. */
+function statusForHttpCode(statusCode: number): { status: InstanceStatus; message: string | null } {
+	if (statusCode >= 200 && statusCode < 300) return { status: InstanceStatus.Ok, message: null }
+	if (statusCode >= 300 && statusCode < 400) {
+		return {
+			status: InstanceStatus.BadConfig,
+			message: `Unexpected redirect (status ${statusCode}) — check the Protocol setting`,
+		}
+	}
+	if (statusCode === 401 || statusCode === 403) {
+		return { status: InstanceStatus.AuthenticationFailure, message: `Authentication failed (status ${statusCode})` }
+	}
+	if (statusCode >= 500) {
+		return { status: InstanceStatus.ConnectionFailure, message: `Device error (status ${statusCode})` }
+	}
+	return { status: InstanceStatus.UnknownError, message: `Unexpected status ${statusCode}` }
+}
+
 export { UpgradeScripts }
 
 export default class ModuleInstance extends InstanceBase<ModuleSchema> {
@@ -58,6 +77,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	#secrets: ModuleSecrets | undefined
 	#controller: AbortController = new AbortController()
 	#queue = new PQueue({ concurrency: 1, autoStart: true, interval: 10, intervalCap: 1, strict: true })
+	#statusManager = new StatusManager(this, { status: InstanceStatus.Connecting, message: 'Initialising' }, 2000)
 	#dispatcher: Agent | undefined
 	#pollTimer: NodeJS.Timeout | undefined
 	#polling = false
@@ -77,7 +97,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		this.#secrets = secrets
 		this.#updateDispatcher()
 
-		this.updateStatus(InstanceStatus.Ok)
+		this.#statusManager.updateStatus(InstanceStatus.Connecting)
 
 		void this.configUpdated(config, secrets)
 	}
@@ -89,6 +109,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		this.#queue.clear()
 		await this.#dispatcher?.close()
 		this.#dispatcher = undefined
+		this.#statusManager.destroy()
 	}
 
 	async configUpdated(config: ModuleConfig, secrets: ModuleSecrets): Promise<void> {
@@ -99,6 +120,8 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		this.#controller = new AbortController()
 
 		process.env.NODE_TLS_REJECT_UNAUTHORIZED = config.allowInsecure ? '0' : '1'
+
+		this.#statusManager.updateStatus(InstanceStatus.Connecting, `Config updated — reinitialising`)
 
 		this.#updateDispatcher()
 		this.#updateCompanionBits()
@@ -219,16 +242,19 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 				status === undefined ||
 				jobs === undefined
 			if (malformed) {
-				this.updateStatus(InstanceStatus.UnknownWarning, 'Unexpected response, see log')
+				this.#statusManager.updateStatus(InstanceStatus.UnknownWarning, 'Unexpected response, see log')
 			} else {
-				this.updateStatus(InstanceStatus.Ok)
+				this.#statusManager.updateStatus(InstanceStatus.Ok)
 			}
 		} catch (err) {
 			// An abort means the config changed or the module went away, not a failure
 			if (signal.aborted) return
 
 			this.log('error', `Poll failed: ${err instanceof Error ? err.message : String(err)}`)
-			this.updateStatus(InstanceStatus.ConnectionFailure)
+			this.#statusManager.updateStatus(
+				InstanceStatus.ConnectionFailure,
+				err instanceof Error ? err.message : String(err),
+			)
 		} finally {
 			this.#polling = false
 		}
@@ -278,17 +304,28 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 				if (sendBody) headers['Content-Type'] = 'application/json'
 
 				this.log('debug', `Sending: ${endpoint.method} ${url}`)
-				const {
-					statusCode,
-					headers: responseHeaders,
-					body,
-				} = await request(url, {
-					method: endpoint.method,
-					signal: taskSignal,
-					dispatcher: this.#dispatcher,
-					headers,
-					body: sendBody ? JSON.stringify(msg.body) : undefined,
-				})
+				let requestResult: Awaited<ReturnType<typeof request>>
+				try {
+					requestResult = await request(url, {
+						method: endpoint.method,
+						signal: taskSignal,
+						dispatcher: this.#dispatcher,
+						headers,
+						body: sendBody ? JSON.stringify(msg.body) : undefined,
+					})
+				} catch (err) {
+					if (!taskSignal?.aborted) {
+						this.#statusManager.updateStatus(
+							InstanceStatus.ConnectionFailure,
+							err instanceof Error ? err.message : String(err),
+						)
+					}
+					throw err
+				}
+
+				const { statusCode, headers: responseHeaders, body } = requestResult
+				const { status, message } = statusForHttpCode(statusCode)
+				this.#statusManager.updateStatus(status, message)
 
 				const contentType = String(responseHeaders['content-type'] ?? '')
 				const text = await body.text()
